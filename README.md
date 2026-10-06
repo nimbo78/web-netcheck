@@ -101,9 +101,6 @@ Or install it system-wide:
 ```bash
 sudo mkdir -p /etc/web-netcheck
 sudo cp profiles/example.conf /etc/web-netcheck/my-service.conf
-
-```bash
-sudo cp profiles/example.conf /etc/web-netcheck/my-service.conf
 sudoedit /etc/web-netcheck/my-service.conf
 ```
 

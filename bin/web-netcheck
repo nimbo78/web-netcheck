@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.2.3"
+VERSION="0.2.4"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -191,8 +191,7 @@ check_host() {
 }
 
 extract_https_urls() {
-    grep -Eo 'https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+' "$1" 2>/dev/null \
-        | sed -E "s/[\\\"'<>),;]+$//" \
+    grep -Eo "https://[^\\\"'<>[:space:]]+" "$1" 2>/dev/null \
         | sed 's/&amp;/\&/g' \
         | sort -u
 }

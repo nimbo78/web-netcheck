@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+PROGRAM="${0##*/}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_PROFILE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)/profiles"
+SYSTEM_PROFILE_DIR="${WEB_NETCHECK_CONFIG_DIR:-/etc/web-netcheck}"
+
+ASSET_COUNT_DEFAULT=3
+MIN_ASSET_SIZE_DEFAULT=$((128 * 1024))
+RANGE_SIZE_DEFAULT=4096
+CONNECT_TIMEOUT_DEFAULT=5
+REQUEST_TIMEOUT_DEFAULT=20
+DOWNLOAD_TIMEOUT_DEFAULT=60
+MAX_ASSET_PROBES_DEFAULT=50
+
+IP_VERSION=4
+VERBOSE=0
+AUTO_MODE=0
+PROFILE=""
+BASE_URL_OVERRIDE=""
+
+usage() {
+    cat <<USAGE
+Usage:
+  $PROGRAM PROFILE [options]
+  $PROGRAM --url https://example.com --auto [options]
+
+Options:
+  -n, --assets N          Number of random assets to verify
+      --min-size BYTES    Minimum asset size
+      --range-size BYTES  Tail range size
+      --url URL           Base URL for ad-hoc mode
+      --auto              Discover hosts/assets from --url
+  -6, --ipv6              Use IPv6 instead of IPv4
+  -v, --verbose           Show failed curl diagnostics
+  -h, --help              Show help
+
+Profile search order:
+  1. $SYSTEM_PROFILE_DIR/PROFILE.conf
+  2. $REPO_PROFILE_DIR/PROFILE.conf
+USAGE
+}
+
+CLI_ASSET_COUNT=""
+CLI_MIN_ASSET_SIZE=""
+CLI_RANGE_SIZE=""
+
+while (($#)); do
+    case "$1" in
+        -n|--assets)
+            [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid --assets" >&2; exit 2; }
+            CLI_ASSET_COUNT="$2"; shift 2 ;;
+        --min-size)
+            [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid --min-size" >&2; exit 2; }
+            CLI_MIN_ASSET_SIZE="$2"; shift 2 ;;
+        --range-size)
+            [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid --range-size" >&2; exit 2; }
+            CLI_RANGE_SIZE="$2"; shift 2 ;;
+        --url)
+            [[ $# -ge 2 ]] || { echo "Missing --url value" >&2; exit 2; }
+            BASE_URL_OVERRIDE="$2"; shift 2 ;;
+        --auto) AUTO_MODE=1; shift ;;
+        -6|--ipv6) IP_VERSION=6; shift ;;
+        -v|--verbose) VERBOSE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *)
+            [[ -z "$PROFILE" ]] || { echo "Only one profile may be specified" >&2; exit 2; }
+            PROFILE="$1"; shift ;;
+    esac
+done
+
+required_cmds=(curl dig shuf sha256sum stat awk sed grep sort head tail cmp mktemp)
+for cmd in "${required_cmds[@]}"; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+        echo "ERROR: missing dependency: $cmd" >&2
+        echo "Ubuntu: sudo apt install -y curl dnsutils coreutils" >&2
+        exit 2
+    }
+done
+
+# Profile defaults.
+BASE_URL=""
+STATIC_HOSTS=()
+DISCOVER_HTML_HOSTS=1
+CHECK_ASSETS=1
+ASSET_URL_REGEX='^https://'
+ASSET_COUNT="$ASSET_COUNT_DEFAULT"
+MIN_ASSET_SIZE="$MIN_ASSET_SIZE_DEFAULT"
+RANGE_SIZE="$RANGE_SIZE_DEFAULT"
+CONNECT_TIMEOUT="$CONNECT_TIMEOUT_DEFAULT"
+REQUEST_TIMEOUT="$REQUEST_TIMEOUT_DEFAULT"
+DOWNLOAD_TIMEOUT="$DOWNLOAD_TIMEOUT_DEFAULT"
+MAX_ASSET_PROBES="$MAX_ASSET_PROBES_DEFAULT"
+META_URL=""
+META_JQ_FILTER=""
+
+if [[ -n "$PROFILE" ]]; then
+    PROFILE_FILE=""
+    for candidate in "$SYSTEM_PROFILE_DIR/$PROFILE.conf" "$REPO_PROFILE_DIR/$PROFILE.conf"; do
+        if [[ -r "$candidate" ]]; then PROFILE_FILE="$candidate"; break; fi
+    done
+    [[ -n "$PROFILE_FILE" ]] || { echo "ERROR: profile '$PROFILE' not found" >&2; exit 2; }
+    # shellcheck source=/dev/null
+    source "$PROFILE_FILE"
+fi
+
+if [[ -n "$BASE_URL_OVERRIDE" ]]; then BASE_URL="$BASE_URL_OVERRIDE"; fi
+if [[ "$AUTO_MODE" -eq 1 && -z "$BASE_URL" ]]; then
+    echo "ERROR: --auto requires --url or profile BASE_URL" >&2; exit 2
+fi
+if [[ -z "$PROFILE" && "$AUTO_MODE" -ne 1 ]]; then
+    echo "ERROR: specify PROFILE or --url URL --auto" >&2; usage >&2; exit 2
+fi
+[[ -n "$BASE_URL" ]] || { echo "ERROR: BASE_URL is empty" >&2; exit 2; }
+
+[[ -n "$CLI_ASSET_COUNT" ]] && ASSET_COUNT="$CLI_ASSET_COUNT"
+[[ -n "$CLI_MIN_ASSET_SIZE" ]] && MIN_ASSET_SIZE="$CLI_MIN_ASSET_SIZE"
+[[ -n "$CLI_RANGE_SIZE" ]] && RANGE_SIZE="$CLI_RANGE_SIZE"
+
+if [[ "$IP_VERSION" -eq 6 ]]; then CURL_IP=(-6); DIG_TYPE=AAAA; else CURL_IP=(-4); DIG_TYPE=A; fi
+
+TMPDIR_NETCHECK=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_NETCHECK"' EXIT
+HTML_FILE="$TMPDIR_NETCHECK/base.html"
+META_FILE="$TMPDIR_NETCHECK/meta.json"
+
+FAIL=0
+HOST_FAIL=0
+ASSET_FAIL=0
+META_WARN=0
+SELECTED_URLS=()
+SELECTED_SIZES=()
+
+hr() { printf '%*s\n' 100 '' | tr ' ' '-'; }
+human_bytes() {
+    awk -v n="$1" 'BEGIN { if(n>=1073741824)printf "%.2f GiB",n/1073741824; else if(n>=1048576)printf "%.2f MiB",n/1048576; else if(n>=1024)printf "%.2f KiB",n/1024; else printf "%d B",n }'
+}
+first_ip() {
+    local host="$1"
+    if [[ "$DIG_TYPE" == A ]]; then
+        dig +time=2 +tries=1 +short A "$host" 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){3}$' | head -1
+    else
+        dig +time=2 +tries=1 +short AAAA "$host" 2>/dev/null | grep -E '^[0-9A-Fa-f:]+$' | head -1
+    fi
+}
+check_host() {
+    local host="$1" source="$2" mandatory="${3:-1}" ip result rc remote_ip http tls total err
+    ip=$(first_ip "$host")
+    if [[ -z "$ip" ]]; then
+        printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' "$host" FAIL - - - - "$source"
+        [[ "$mandatory" -eq 1 ]] && HOST_FAIL=1
+        return 1
+    fi
+    err="$TMPDIR_NETCHECK/host.err"
+    result=$(curl "${CURL_IP[@]}" -sS -o /dev/null --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+        -w '%{remote_ip}|%{http_code}|%{time_appconnect}|%{time_total}' "https://$host/" 2>"$err")
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        printf '%-48s %-6s %-7s %-7s %-15s %-9s %s (curl=%d)\n' "$host" OK FAIL - "$ip" - "$source" "$rc"
+        [[ "$VERBOSE" -eq 1 && -s "$err" ]] && sed 's/^/  /' "$err"
+        [[ "$mandatory" -eq 1 ]] && HOST_FAIL=1
+        return 1
+    fi
+    IFS='|' read -r remote_ip http tls total <<< "$result"
+    printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' "$host" OK OK "$http" "${remote_ip:-$ip}" "${total}s" "$source"
+}
+
+extract_https_urls() {
+    grep -Eo 'https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+' "$1" 2>/dev/null \
+      | sed -E 's/["'"'<>),;]+$//' \
+      | sed 's/&amp;/\&/g' \
+      | sort -u
+}
+url_host() {
+    printf '%s\n' "$1" | sed -E 's#^https://([^/:]+).*#\1#'
+}
+get_head_size() {
+    local url="$1" headers="$TMPDIR_NETCHECK/head.$RANDOM.$$.txt" size rc
+    curl "${CURL_IP[@]}" -sSIL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" "$url" >"$headers" 2>/dev/null
+    rc=$?
+    [[ "$rc" -eq 0 ]] || { rm -f "$headers"; return 1; }
+    size=$(awk 'tolower($1)=="content-length:" {v=$2; gsub("\\r","",v)} END{if(v~/^[0-9]+$/)print v}' "$headers")
+    rm -f "$headers"
+    [[ "$size" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$size"
+}
+
+check_asset() {
+    local idx="$1" url="$2" expected="$3"
+    local full="$TMPDIR_NETCHECK/a.$idx.full" headers="$TMPDIR_NETCHECK/a.$idx.headers" err="$TMPDIR_NETCHECK/a.$idx.err"
+    local range="$TMPDIR_NETCHECK/a.$idx.range" rheaders="$TMPDIR_NETCHECK/a.$idx.rheaders" rerr="$TMPDIR_NETCHECK/a.$idx.rerr" fulltail="$TMPDIR_NETCHECK/a.$idx.fulltail"
+    local result rc http dl rip total actual sha start end rsize rresult rrc rhttp rdl ractual crange
+
+    echo; echo "Asset #$idx"; echo "URL:      $url"; echo "Expected: $expected bytes ($(human_bytes "$expected"))"
+    result=$(curl "${CURL_IP[@]}" -sS -L --connect-timeout "$CONNECT_TIMEOUT" --max-time "$DOWNLOAD_TIMEOUT" \
+        --speed-limit 1 --speed-time 15 -D "$headers" -o "$full" \
+        -w '%{http_code}|%{size_download}|%{remote_ip}|%{time_total}' "$url" 2>"$err")
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        actual=0; [[ -f "$full" ]] && actual=$(stat -c '%s' "$full" 2>/dev/null || echo 0)
+        echo "FULL GET: FAIL curl=$rc received=$actual bytes"
+        [[ "$rc" -eq 18 ]] && echo "          CURLE_PARTIAL_FILE"
+        [[ "$VERBOSE" -eq 1 && -s "$err" ]] && sed 's/^/          /' "$err"
+        ASSET_FAIL=1; return 1
+    fi
+    IFS='|' read -r http dl rip total <<< "$result"
+    actual=$(stat -c '%s' "$full"); sha=$(sha256sum "$full" | awk '{print $1}')
+    echo "FULL GET: HTTP=$http IP=$rip curl_size=$dl actual=$actual time=${total}s"
+    echo "SHA256:   $sha"
+    [[ "$http" =~ ^2[0-9][0-9]$ ]] || { echo "FULL GET: FAIL unexpected HTTP $http"; ASSET_FAIL=1; return 1; }
+    [[ "$actual" -eq "$expected" ]] || { echo "FULL GET: FAIL expected=$expected actual=$actual"; ASSET_FAIL=1; return 1; }
+    echo "FULL GET: OK"
+
+    rsize="$RANGE_SIZE"; (( expected < rsize )) && rsize="$expected"
+    start=$((expected-rsize)); end=$((expected-1))
+    rresult=$(curl "${CURL_IP[@]}" -sS -L --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+        --range "${start}-${end}" -D "$rheaders" -o "$range" -w '%{http_code}|%{size_download}' "$url" 2>"$rerr")
+    rrc=$?
+    if [[ "$rrc" -ne 0 ]]; then
+        echo "TAIL GET: FAIL curl=$rrc"; [[ "$VERBOSE" -eq 1 && -s "$rerr" ]] && sed 's/^/          /' "$rerr"; ASSET_FAIL=1; return 1
+    fi
+    IFS='|' read -r rhttp rdl <<< "$rresult"; ractual=$(stat -c '%s' "$range")
+    crange=$(awk 'tolower($1)=="content-range:" {line=$0; sub(/^[^:]+:[[:space:]]*/,"",line); gsub("\\r","",line); v=line} END{print v}' "$rheaders")
+    echo "TAIL GET: HTTP=$rhttp bytes=$ractual Content-Range='${crange:-n/a}'"
+    [[ "$rhttp" == 206 && "$ractual" -eq "$rsize" ]] || { echo "TAIL GET: FAIL"; ASSET_FAIL=1; return 1; }
+    [[ -z "$crange" || "$crange" == "bytes ${start}-${end}/${expected}" ]] || { echo "TAIL GET: FAIL unexpected Content-Range"; ASSET_FAIL=1; return 1; }
+    tail -c "$rsize" "$full" >"$fulltail"
+    cmp -s "$fulltail" "$range" || { echo "TAIL CMP: FAIL"; ASSET_FAIL=1; return 1; }
+    echo "TAIL CMP: OK final $rsize bytes match independent Range response"
+}
+
+BASE_HOST=$(url_host "$BASE_URL")
+if ((${#STATIC_HOSTS[@]} == 0)); then STATIC_HOSTS=("$BASE_HOST"); fi
+
+printf 'web-netcheck\nTime:          %s\nProfile:       %s\nBase URL:      %s\nIP family:     IPv%s\nAssets:        %s\nMinimum size:  %s (%s)\n' \
+    "$(date -Is)" "${PROFILE:-ad-hoc}" "$BASE_URL" "$IP_VERSION" "$ASSET_COUNT" "$MIN_ASSET_SIZE" "$(human_bytes "$MIN_ASSET_SIZE")"
+hr
+
+echo "[1/3] Base page and hostname discovery"
+if ! curl "${CURL_IP[@]}" -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" "$BASE_URL" >"$HTML_FILE"; then
+    echo "FAIL: cannot download $BASE_URL"; HOST_FAIL=1; ASSET_FAIL=1
+fi
+
+DYNAMIC_HOSTS=()
+if [[ "$DISCOVER_HTML_HOSTS" -eq 1 && -s "$HTML_FILE" ]]; then
+    mapfile -t DYNAMIC_HOSTS < <(extract_https_urls "$HTML_FILE" | while read -r u; do url_host "$u"; done | grep -E '^[A-Za-z0-9.-]+$' | sort -u)
+fi
+
+META_HOSTS=()
+if [[ -n "$META_URL" ]]; then
+    if command -v jq >/dev/null 2>&1 && curl "${CURL_IP[@]}" -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" "$META_URL" >"$META_FILE"; then
+        if [[ -n "$META_JQ_FILTER" ]]; then
+            mapfile -t META_HOSTS < <(jq -r "$META_JQ_FILTER" "$META_FILE" 2>/dev/null | sed 's/^\.//' | grep -v '\*' | grep -E '^[A-Za-z0-9._-]+$' | sort -u)
+        fi
+    else
+        echo "WARN: metadata discovery failed: $META_URL"; META_WARN=1
+    fi
+fi
+
+mapfile -t ALL_HOSTS < <(printf '%s\n' "${STATIC_HOSTS[@]}" "${DYNAMIC_HOSTS[@]}" "${META_HOSTS[@]}" | sed '/^$/d' | sort -u)
+echo "Discovered ${#DYNAMIC_HOSTS[@]} hostname(s) from HTML; ${#META_HOSTS[@]} from metadata; ${#ALL_HOSTS[@]} total."
+
+hr
+echo "[2/3] DNS + HTTPS reachability"
+printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' HOST DNS HTTPS HTTP REMOTE_IP TOTAL SOURCE
+hr
+for host in "${ALL_HOSTS[@]}"; do
+    source=discovered; printf '%s\n' "${STATIC_HOSTS[@]}" | grep -Fxq "$host" && source=static
+    printf '%s\n' "${META_HOSTS[@]}" | grep -Fxq "$host" && [[ "$source" != static ]] && source=metadata
+    check_host "$host" "$source" 1 || true
+done
+
+hr
+echo "[3/3] Asset integrity"
+if [[ "$CHECK_ASSETS" -ne 1 || ! -s "$HTML_FILE" ]]; then
+    echo "SKIP: asset checks disabled or base HTML unavailable"
+else
+    mapfile -t ASSET_URLS < <(extract_https_urls "$HTML_FILE" | grep -E "$ASSET_URL_REGEX" | shuf)
+    echo "Found ${#ASSET_URLS[@]} candidate asset URL(s)."
+    probes=0
+    for url in "${ASSET_URLS[@]}"; do
+        ((probes+=1)); (( probes > MAX_ASSET_PROBES )) && break
+        size=$(get_head_size "$url" || true)
+        [[ "$size" =~ ^[0-9]+$ ]] || continue
+        if (( size >= MIN_ASSET_SIZE )); then
+            SELECTED_URLS+=("$url"); SELECTED_SIZES+=("$size")
+            ((${#SELECTED_URLS[@]} >= ASSET_COUNT)) && break
+        fi
+    done
+    echo "Probed $probes candidate(s); selected ${#SELECTED_URLS[@]}/$ASSET_COUNT >= $(human_bytes "$MIN_ASSET_SIZE")."
+    if ((${#SELECTED_URLS[@]} < ASSET_COUNT)); then
+        echo "FAIL: not enough large assets found"; ASSET_FAIL=1
+    fi
+    for i in "${!SELECTED_URLS[@]}"; do check_asset "$((i+1))" "${SELECTED_URLS[$i]}" "${SELECTED_SIZES[$i]}" || true; done
+fi
+
+hr
+[[ "$HOST_FAIL" -eq 0 ]] && echo 'RESULT endpoint_reachability=OK' || { echo 'RESULT endpoint_reachability=FAIL'; FAIL=1; }
+[[ "$META_WARN" -eq 0 ]] && echo 'RESULT metadata_discovery=OK' || echo 'RESULT metadata_discovery=WARN'
+[[ "$ASSET_FAIL" -eq 0 ]] && echo 'RESULT asset_integrity=OK' || { echo 'RESULT asset_integrity=FAIL'; FAIL=1; }
+[[ "$FAIL" -eq 0 ]] && { echo 'RESULT overall=OK'; exit 0; } || { echo 'RESULT overall=FAIL'; exit 1; }

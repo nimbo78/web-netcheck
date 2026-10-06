@@ -48,7 +48,8 @@ sudo install -m 0644 profiles/github.conf /etc/web-netcheck/github.conf
 Currently included:
 
 - `github` — GitHub web/API/CDN/download/registry endpoints;
-- `ya` — Yandex `https://ya.ru/`, core search/static/authentication endpoints and current page dependencies.
+- `ya` — Yandex `https://ya.ru/`, core search/static/authentication endpoints and current page dependencies;
+- `zai` — Z.AI API, including an Anthropic-compatible POST probe for `/api/anthropic/v1/messages?beta=true`.
 
 ## GitHub check
 
@@ -81,6 +82,30 @@ web-netcheck ya
 ```
 
 The Yandex profile checks core hosts such as `ya.ru`, `yandex.ru`, `yastatic.net`, `yastat.net`, `passport.yandex.ru`, `mc.yandex.ru`, and image/static endpoints. It also discovers additional HTTPS hosts from the current `ya.ru` page and verifies random large static objects.
+
+## Z.AI API check
+
+Basic network/API-route check without credentials:
+
+```bash
+web-netcheck zai
+```
+
+For an end-to-end Anthropic-compatible backend probe:
+
+```bash
+export ZAI_API_KEY='...'
+export ZAI_PROBE_MODEL='glm-4.7'   # optional
+web-netcheck zai
+```
+
+When `ZAI_API_KEY` is present, the profile sends a minimal `POST` to:
+
+```text
+https://api.z.ai/api/anthropic/v1/messages?beta=true
+```
+
+with `max_tokens=1`. A `5xx` response such as `Service Unavailable` is treated as a failure and the first 1024 bytes of the response body are printed. Without a key, the same route is probed unauthenticated; a normal `4xx` authentication response counts as reachable, while a `5xx` still fails.
 
 ## Ad-hoc check of another site
 

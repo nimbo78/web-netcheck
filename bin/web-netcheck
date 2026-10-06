@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+VERSION="0.2.1"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -195,12 +196,10 @@ extract_https_urls() {
         | sort -u
 }
 
-url_host() {
-    local url="$1"
-    url="${url#https://}"
-    url="${url%%/*}"
-    url="${url%%:*}"
-    printf '%s\n' "$url"
+extract_https_hosts() {
+    extract_https_urls "$1" \
+        | awk -F/ 'NF >= 3 { host=$3; sub(/:.*/, "", host); if (host != "") print host }' \
+        | sort -u
 }
 
 get_head_size() {
@@ -263,8 +262,8 @@ BASE_HOST="${BASE_HOST%%/*}"
 BASE_HOST="${BASE_HOST%%:*}"
 if ((${#STATIC_HOSTS[@]} == 0)); then STATIC_HOSTS=("$BASE_HOST"); fi
 
-printf 'web-netcheck\nTime:          %s\nProfile:       %s\nProfile file:  %s\nBase URL:      %s\nIP family:     IPv%s\nAssets:        %s\nMinimum size:  %s (%s)\n' \
-    "$(date -Is)" "${PROFILE:-ad-hoc}" "${PROFILE_FILE:-n/a}" "$BASE_URL" "$IP_VERSION" "$ASSET_COUNT" "$MIN_ASSET_SIZE" "$(human_bytes "$MIN_ASSET_SIZE")"
+printf 'web-netcheck %s\nTime:          %s\nProfile:       %s\nProfile file:  %s\nBase URL:      %s\nIP family:     IPv%s\nAssets:        %s\nMinimum size:  %s (%s)\n' \
+    "$VERSION" "$(date -Is)" "${PROFILE:-ad-hoc}" "${PROFILE_FILE:-n/a}" "$BASE_URL" "$IP_VERSION" "$ASSET_COUNT" "$MIN_ASSET_SIZE" "$(human_bytes "$MIN_ASSET_SIZE")"
 hr
 
 echo "[1/3] Base page and hostname discovery"
@@ -274,7 +273,63 @@ fi
 
 DYNAMIC_HOSTS=()
 if [[ "$DISCOVER_HTML_HOSTS" -eq 1 && -s "$HTML_FILE" ]]; then
-    mapfile -t DYNAMIC_HOSTS < <(extract_https_urls "$HTML_FILE" | while read -r u; do url_host "$u"; done | grep -E '^[A-Za-z0-9.-]+$' | sort -u)
+    mapfile -t DYNAMIC_HOSTS < <(extract_https_hosts "$HTML_FILE" | grep -E '^[A-Za-z0-9.-]+
+fi
+
+META_HOSTS=()
+if [[ -n "$META_URL" ]]; then
+    if command -v jq >/dev/null 2>&1 && curl "${CURL_IP[@]}" -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" "$META_URL" >"$META_FILE"; then
+        if [[ -n "$META_JQ_FILTER" ]]; then
+            mapfile -t META_HOSTS < <(jq -r "$META_JQ_FILTER" "$META_FILE" 2>/dev/null | sed 's/^\.//' | grep -v '\*' | grep -E '^[A-Za-z0-9._-]+$' | sort -u)
+        fi
+    else
+        echo "WARN: metadata discovery failed: $META_URL"; META_WARN=1
+    fi
+fi
+
+mapfile -t ALL_HOSTS < <(printf '%s\n' "${STATIC_HOSTS[@]}" "${DYNAMIC_HOSTS[@]}" "${META_HOSTS[@]}" | sed '/^$/d' | sort -u)
+echo "Discovered ${#DYNAMIC_HOSTS[@]} hostname(s) from HTML; ${#META_HOSTS[@]} from metadata; ${#ALL_HOSTS[@]} total."
+
+hr
+echo "[2/3] DNS + HTTPS reachability"
+printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' HOST DNS HTTPS HTTP REMOTE_IP TOTAL SOURCE
+hr
+for host in "${ALL_HOSTS[@]}"; do
+    source=discovered; printf '%s\n' "${STATIC_HOSTS[@]}" | grep -Fxq "$host" && source=static
+    printf '%s\n' "${META_HOSTS[@]}" | grep -Fxq "$host" && [[ "$source" != static ]] && source=metadata
+    check_host "$host" "$source" 1 || true
+done
+
+hr
+echo "[3/3] Asset integrity"
+if [[ "$CHECK_ASSETS" -ne 1 || ! -s "$HTML_FILE" ]]; then
+    echo "SKIP: asset checks disabled or base HTML unavailable"
+else
+    mapfile -t ASSET_URLS < <(extract_https_urls "$HTML_FILE" | grep -E "$ASSET_URL_REGEX" | shuf)
+    echo "Found ${#ASSET_URLS[@]} candidate asset URL(s)."
+    probes=0
+    for url in "${ASSET_URLS[@]}"; do
+        ((probes+=1)); (( probes > MAX_ASSET_PROBES )) && break
+        size=$(get_head_size "$url" || true)
+        [[ "$size" =~ ^[0-9]+$ ]] || continue
+        if (( size >= MIN_ASSET_SIZE )); then
+            SELECTED_URLS+=("$url"); SELECTED_SIZES+=("$size")
+            ((${#SELECTED_URLS[@]} >= ASSET_COUNT)) && break
+        fi
+    done
+    echo "Probed $probes candidate(s); selected ${#SELECTED_URLS[@]}/$ASSET_COUNT >= $(human_bytes "$MIN_ASSET_SIZE")."
+    if ((${#SELECTED_URLS[@]} < ASSET_COUNT)); then
+        echo "FAIL: not enough large assets found"; ASSET_FAIL=1
+    fi
+    for i in "${!SELECTED_URLS[@]}"; do check_asset "$((i+1))" "${SELECTED_URLS[$i]}" "${SELECTED_SIZES[$i]}" || true; done
+fi
+
+hr
+[[ "$HOST_FAIL" -eq 0 ]] && echo 'RESULT endpoint_reachability=OK' || { echo 'RESULT endpoint_reachability=FAIL'; FAIL=1; }
+[[ "$META_WARN" -eq 0 ]] && echo 'RESULT metadata_discovery=OK' || echo 'RESULT metadata_discovery=WARN'
+[[ "$ASSET_FAIL" -eq 0 ]] && echo 'RESULT asset_integrity=OK' || { echo 'RESULT asset_integrity=FAIL'; FAIL=1; }
+[[ "$FAIL" -eq 0 ]] && { echo 'RESULT overall=OK'; exit 0; } || { echo 'RESULT overall=FAIL'; exit 1; }
+)
 fi
 
 META_HOSTS=()

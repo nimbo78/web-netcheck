@@ -80,8 +80,9 @@ For production monitoring, create a profile instead so critical API/download/reg
 For `web-netcheck github`, profiles are searched in this order:
 
 1. `<directory containing web-netcheck>/github.conf`
-2. `../profiles/github.conf` relative to the script (useful when running from the repository)
-3. `/etc/web-netcheck/github.conf`
+2. `<directory containing web-netcheck>/profiles/github.conf`
+3. `../profiles/github.conf` relative to the script (useful when the script is under `bin/`)
+4. `/etc/web-netcheck/github.conf`
 
 The first readable file wins. This makes it possible to keep a portable `.conf` directly next to the script and have it override packaged/system configuration.
 

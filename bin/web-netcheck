@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.2"
+VERSION="0.4.3"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -387,11 +387,50 @@ check_asset() {
     IFS='|' read -r rhttp rdl <<< "$rresult"; ractual=$(stat -c '%s' "$range")
     crange=$(awk 'tolower($1)=="content-range:" {line=$0; sub(/^[^:]+:[[:space:]]*/,"",line); gsub("\\r","",line); v=line} END{print v}' "$rheaders")
     echo "TAIL GET: HTTP=$rhttp bytes=$ractual Content-Range='${crange:-n/a}'"
-    [[ "$rhttp" == 206 && "$ractual" -eq "$rsize" ]] || { echo "TAIL GET: FAIL"; ASSET_FAIL=1; return 1; }
-    [[ -z "$crange" || "$crange" == "bytes ${start}-${end}/${expected}" ]] || { echo "TAIL GET: FAIL unexpected Content-Range"; ASSET_FAIL=1; return 1; }
-    tail -c "$rsize" "$full" >"$fulltail"
-    cmp -s "$fulltail" "$range" || { echo "TAIL CMP: FAIL"; ASSET_FAIL=1; return 1; }
-    echo "TAIL CMP: OK final $rsize bytes match independent Range response"
+
+    if [[ "$rhttp" == 206 ]]; then
+        [[ "$ractual" -eq "$rsize" ]] || {
+            echo "TAIL GET: FAIL expected range size=$rsize actual=$ractual"
+            ASSET_FAIL=1
+            return 1
+        }
+        [[ "$crange" == "bytes ${start}-${end}/${expected}" ]] || {
+            echo "TAIL GET: FAIL unexpected Content-Range"
+            ASSET_FAIL=1
+            return 1
+        }
+
+        tail -c "$rsize" "$full" >"$fulltail"
+        cmp -s "$fulltail" "$range" || {
+            echo "TAIL CMP: FAIL"
+            ASSET_FAIL=1
+            return 1
+        }
+        echo "TAIL CMP: OK final $rsize bytes match independent Range response"
+        return 0
+    fi
+
+    if [[ "$rhttp" == 200 ]]; then
+        if [[ "$ractual" -ne "$expected" ]]; then
+            echo "TAIL GET: FAIL server ignored Range but returned unexpected size=$ractual expected=$expected"
+            ASSET_FAIL=1
+            return 1
+        fi
+
+        cmp -s "$full" "$range" || {
+            echo "FULL CMP: FAIL server ignored Range and repeated object differs"
+            ASSET_FAIL=1
+            return 1
+        }
+
+        echo "TAIL GET: RANGE UNSUPPORTED (server returned the complete object)"
+        echo "FULL CMP: OK repeated full object matches original download"
+        return 0
+    fi
+
+    echo "TAIL GET: FAIL unexpected HTTP $rhttp"
+    ASSET_FAIL=1
+    return 1
 }
 
 BASE_HOST="${BASE_URL#https://}"

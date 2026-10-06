@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -273,7 +273,7 @@ fi
 
 DYNAMIC_HOSTS=()
 if [[ "$DISCOVER_HTML_HOSTS" -eq 1 && -s "$HTML_FILE" ]]; then
-    mapfile -t DYNAMIC_HOSTS < <(extract_https_hosts "$HTML_FILE" | grep -E '^[A-Za-z0-9.-]+
+    mapfile -t DYNAMIC_HOSTS < <(extract_https_hosts "$HTML_FILE" | grep -E '^[A-Za-z0-9.-]+$')
 fi
 
 META_HOSTS=()

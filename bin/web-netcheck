@@ -4,6 +4,7 @@ set -uo pipefail
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
+SCRIPT_PROFILE_DIR="$SCRIPT_DIR/profiles"
 REPO_PROFILE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)/profiles"
 SYSTEM_PROFILE_DIR="${WEB_NETCHECK_CONFIG_DIR:-/etc/web-netcheck}"
 
@@ -39,8 +40,9 @@ Options:
 
 Profile search order:
   1. $LOCAL_PROFILE_DIR/PROFILE.conf
-  2. $REPO_PROFILE_DIR/PROFILE.conf
-  3. $SYSTEM_PROFILE_DIR/PROFILE.conf
+  2. $SCRIPT_PROFILE_DIR/PROFILE.conf
+  3. $REPO_PROFILE_DIR/PROFILE.conf
+  4. $SYSTEM_PROFILE_DIR/PROFILE.conf
 USAGE
 }
 
@@ -100,17 +102,27 @@ META_JQ_FILTER=""
 
 PROFILE_FILE=""
 if [[ -n "$PROFILE" ]]; then
-    for candidate in \
-        "$LOCAL_PROFILE_DIR/$PROFILE.conf" \
-        "$REPO_PROFILE_DIR/$PROFILE.conf" \
+    PROFILE_CANDIDATES=(
+        "$LOCAL_PROFILE_DIR/$PROFILE.conf"
+        "$SCRIPT_PROFILE_DIR/$PROFILE.conf"
+        "$REPO_PROFILE_DIR/$PROFILE.conf"
         "$SYSTEM_PROFILE_DIR/$PROFILE.conf"
-    do
+    )
+
+    for candidate in "${PROFILE_CANDIDATES[@]}"; do
         if [[ -r "$candidate" ]]; then
             PROFILE_FILE="$candidate"
             break
         fi
     done
-    [[ -n "$PROFILE_FILE" ]] || { echo "ERROR: profile '$PROFILE' not found" >&2; exit 2; }
+
+    if [[ -z "$PROFILE_FILE" ]]; then
+        echo "ERROR: profile '$PROFILE' not found" >&2
+        echo "Searched:" >&2
+        printf '  %s\n' "${PROFILE_CANDIDATES[@]}" >&2
+        exit 2
+    fi
+
     # shellcheck source=/dev/null
     source "$PROFILE_FILE"
 fi

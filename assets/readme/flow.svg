@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">How web-netcheck validates a service</title>
+  <desc id="desc">A five-stage flow from profile selection to DNS and HTTPS checks, asset discovery, full-body verification, and a machine-readable result.</desc>
+  <rect width="1200" height="360" rx="24" fill="#0B1220"/>
+  <rect x="1" y="1" width="1198" height="358" rx="23" fill="none" stroke="#22324A"/>
+  <text x="54" y="58" font-family="Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="28" font-weight="800" fill="#F7FAFC">How the check moves through the stack</text>
+  <text x="54" y="88" font-family="Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="17" fill="#8EA0B8">The goal is not “can I connect?” — it is “can I actually use the service?”</text>
+  <g transform="translate(54 132)" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+    <path d="M180 72H240M414 72H474M648 72H708M882 72H942" stroke="#3E5878" stroke-width="3" stroke-linecap="round"/>
+    <path d="M232 64l12 8-12 8M466 64l12 8-12 8M700 64l12 8-12 8M934 64l12 8-12 8" fill="none" stroke="#5EB1FF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <g>
+      <rect width="180" height="144" rx="18" fill="#0F1A2B" stroke="#2B3E59"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#5EB1FF">01 / PROFILE</text>
+      <text x="20" y="65" font-size="19" font-weight="700" fill="#E7EEF7">static + dynamic</text>
+      <text x="20" y="92" font-size="15" fill="#91A4BA">hosts, URLs, API</text>
+      <text x="20" y="115" font-size="15" fill="#91A4BA">custom probes</text>
+    </g>
+    <g transform="translate(234 0)">
+      <rect width="180" height="144" rx="18" fill="#0F1A2B" stroke="#2B3E59"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#5EB1FF">02 / NETWORK</text>
+      <text x="20" y="65" font-size="19" font-weight="700" fill="#E7EEF7">DNS → HTTPS</text>
+      <text x="20" y="92" font-size="15" fill="#91A4BA">remote IP</text>
+      <text x="20" y="115" font-size="15" fill="#91A4BA">HTTP status + time</text>
+    </g>
+    <g transform="translate(468 0)">
+      <rect width="180" height="144" rx="18" fill="#0F1A2B" stroke="#2B3E59"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#5EB1FF">03 / DISCOVER</text>
+      <text x="20" y="65" font-size="19" font-weight="700" fill="#E7EEF7">real resources</text>
+      <text x="20" y="92" font-size="15" fill="#91A4BA">script / link / img</text>
+      <text x="20" y="115" font-size="15" fill="#91A4BA">CDN assets</text>
+    </g>
+    <g transform="translate(702 0)">
+      <rect width="180" height="144" rx="18" fill="#0F1A2B" stroke="#2B3E59"/>
+      <text x="20" y="30" font-size="13" font-weight="700" fill="#5EB1FF">04 / INTEGRITY</text>
+      <text x="20" y="65" font-size="19" font-weight="700" fill="#E7EEF7">full download</text>
+      <text x="20" y="92" font-size="15" fill="#91A4BA">Content-Length</text>
+      <text x="20" y="115" font-size="15" fill="#91A4BA">tail / Range cmp</text>
+    </g>
+    <g transform="translate(936 0)">
+      <rect width="156" height="144" rx="18" fill="#102A21" stroke="#2A8D5A"/>
+      <text x="18" y="30" font-size="13" font-weight="700" fill="#66E3A4">05 / RESULT</text>
+      <text x="18" y="67" font-size="21" font-weight="800" fill="#66E3A4">OK / WARN</text>
+      <text x="18" y="95" font-size="21" font-weight="800" fill="#FF7B7B">FAIL</text>
+      <text x="18" y="121" font-size="14" fill="#A8B8CA">exit 0 / 1 / 2</text>
+    </g>
+  </g>
+  <g transform="translate(54 318)" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#647A95">
+    <text>Range is optional: if an origin ignores it and repeats the complete object byte-for-byte, integrity still passes.</text>
+  </g>
+</svg>

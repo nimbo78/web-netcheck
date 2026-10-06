@@ -22,7 +22,7 @@ For a profile such as GitHub it can:
 
 This is intended to catch failures such as "the first 16 KiB download correctly and the rest is cut off".
 
-The default minimum asset size is 32 KiB. That is deliberately only twice the 16 KiB failure boundary: large enough to prove the transfer continues beyond it, while still working on lightweight pages. If fewer than the requested number of sufficiently large assets are present, the asset test reports `WARN` rather than failing overall; any asset that is found is still verified fully.
+Range requests are optional on the origin. If a server ignores `Range` and returns HTTP 200 with the complete object, web-netcheck compares that repeated full object with the original download and treats a byte-for-byte match as success rather than a failure.\n\nThe default minimum asset size is 32 KiB. That is deliberately only twice the 16 KiB failure boundary: large enough to prove the transfer continues beyond it, while still working on lightweight pages. If fewer than the requested number of sufficiently large assets are present, the asset test reports `WARN` rather than failing overall; any asset that is found is still verified fully.
 
 ## Requirements
 

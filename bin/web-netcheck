@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -215,6 +215,72 @@ check_url() {
     return 0
 }
 
+probe_http_request() {
+    local method="$1"
+    local url="$2"
+    local expect="$3"
+    local body="$4"
+    shift 4
+
+    local out="$TMPDIR_NETCHECK/probe-body.$RANDOM.$"
+    local err="$TMPDIR_NETCHECK/probe-err.$RANDOM.$"
+    local result rc remote_ip http total ok=0
+
+    result=$(curl "${CURL_IP[@]}" -sS -L \
+        -X "$method" \
+        --connect-timeout "$CONNECT_TIMEOUT" \
+        --max-time "$REQUEST_TIMEOUT" \
+        -o "$out" \
+        -w '%{remote_ip}|%{http_code}|%{time_total}' \
+        "$@" \
+        --data "$body" \
+        "$url" 2>"$err")
+    rc=$?
+
+    if [[ "$rc" -ne 0 ]]; then
+        printf 'FAIL %-6s %-3s %-15s %-9s %s\n' "$method" "000" "-" "-" "$url"
+        [[ -s "$err" ]] && sed 's/^/  /' "$err"
+        HOST_FAIL=1
+        rm -f "$out" "$err"
+        return 1
+    fi
+
+    IFS='|' read -r remote_ip http total <<< "$result"
+
+    case "$expect" in
+        2xx)
+            [[ "$http" =~ ^2[0-9][0-9]$ ]] && ok=1
+            ;;
+        non5xx)
+            [[ "$http" =~ ^[1-4][0-9][0-9]$ ]] && ok=1
+            ;;
+        *)
+            echo "ERROR: unknown probe expectation '$expect'" >&2
+            HOST_FAIL=1
+            rm -f "$out" "$err"
+            return 1
+            ;;
+    esac
+
+    if [[ "$ok" -eq 1 ]]; then
+        printf 'OK   %-6s %-3s %-15s %-9s %s\n' "$method" "$http" "$remote_ip" "${total}s" "$url"
+        rm -f "$out" "$err"
+        return 0
+    fi
+
+    printf 'FAIL %-6s %-3s %-15s %-9s %s\n' "$method" "$http" "$remote_ip" "${total}s" "$url"
+    if [[ -s "$out" ]]; then
+        echo "  Response body:"
+        head -c 1024 "$out" | tr '\n' ' ' | sed 's/^/  /'
+        echo
+    fi
+    [[ "$VERBOSE" -eq 1 && -s "$err" ]] && sed 's/^/  /' "$err"
+
+    HOST_FAIL=1
+    rm -f "$out" "$err"
+    return 1
+}
+
 normalize_url() {
     local ref="$1"
 
@@ -380,6 +446,12 @@ if (("${#PROBE_URLS[@]}" > 0)); then
     for url in "${PROBE_URLS[@]}"; do
         check_url "$url" || true
     done
+fi
+
+if declare -F run_custom_probes >/dev/null 2>&1; then
+    echo
+    echo "Custom profile probes:"
+    run_custom_probes || true
 fi
 
 hr

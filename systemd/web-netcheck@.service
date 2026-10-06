@@ -1,0 +1,10 @@
+[Unit]
+Description=Web reachability and asset integrity check (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/web-netcheck %i
+User=nobody
+Group=nogroup

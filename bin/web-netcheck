@@ -100,7 +100,10 @@ META_JQ_FILTER=""
 
 PROFILE_FILE=""
 if [[ -n "$PROFILE" ]]; then
-    for candidate in         "$LOCAL_PROFILE_DIR/$PROFILE.conf"         "$REPO_PROFILE_DIR/$PROFILE.conf"         "$SYSTEM_PROFILE_DIR/$PROFILE.conf"
+    for candidate in \
+        "$LOCAL_PROFILE_DIR/$PROFILE.conf" \
+        "$REPO_PROFILE_DIR/$PROFILE.conf" \
+        "$SYSTEM_PROFILE_DIR/$PROFILE.conf"
     do
         if [[ -r "$candidate" ]]; then
             PROFILE_FILE="$candidate"

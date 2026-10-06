@@ -189,6 +189,7 @@ check_host() {
 }
 
 extract_https_urls() {
+    grep -Eo 'https://[A-Za-z0-9._~:/?#\[\]@!extract_https_urls() {
     grep -Eo 'https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+' "$1" 2>/dev/null \
       | sed -E 's/["'"'<>),;]+$//' \
       | sed 's/&amp;/\&/g' \
@@ -196,6 +197,18 @@ extract_https_urls() {
 }
 url_host() {
     printf '%s\n' "$1" | sed -E 's#^https://([^/:]+).*#\1#'
+}()*+,;=%-]+' "$1" 2>/dev/null \
+      | sed -E "s/[\\\"'<>),;]+$//" \
+      | sed 's/&amp;/\&/g' \
+      | sort -u
+}
+
+url_host() {
+    local url="$1"
+    url="${url#https://}"
+    url="${url%%/*}"
+    url="${url%%:*}"
+    printf '%s\n' "$url"
 }
 get_head_size() {
     local url="$1" headers="$TMPDIR_NETCHECK/head.$RANDOM.$$.txt" size rc
@@ -252,7 +265,9 @@ check_asset() {
     echo "TAIL CMP: OK final $rsize bytes match independent Range response"
 }
 
-BASE_HOST=$(url_host "$BASE_URL")
+BASE_HOST="${BASE_URL#https://}"
+BASE_HOST="${BASE_HOST%%/*}"
+BASE_HOST="${BASE_HOST%%:*}"
 if ((${#STATIC_HOSTS[@]} == 0)); then STATIC_HOSTS=("$BASE_HOST"); fi
 
 printf 'web-netcheck\nTime:          %s\nProfile:       %s\nProfile file:  %s\nBase URL:      %s\nIP family:     IPv%s\nAssets:        %s\nMinimum size:  %s (%s)\n' \

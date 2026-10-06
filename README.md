@@ -41,6 +41,13 @@ sudo mkdir -p /etc/web-netcheck
 sudo install -m 0644 profiles/github.conf /etc/web-netcheck/github.conf
 ```
 
+## Built-in profiles
+
+Currently included:
+
+- `github` — GitHub web/API/CDN/download/registry endpoints;
+- `ya` — Yandex `https://ya.ru/`, core search/static/authentication endpoints and current page dependencies.
+
 ## GitHub check
 
 ```bash
@@ -64,6 +71,14 @@ Verbose curl errors:
 ```bash
 web-netcheck github --verbose
 ```
+
+## Yandex / ya.ru check
+
+```bash
+web-netcheck ya
+```
+
+The Yandex profile checks core hosts such as `ya.ru`, `yandex.ru`, `yastatic.net`, `yastat.net`, `passport.yandex.ru`, `mc.yandex.ru`, and image/static endpoints. It also discovers additional HTTPS hosts from the current `ya.ru` page and verifies random large static objects.
 
 ## Ad-hoc check of another site
 

@@ -22,6 +22,8 @@ For a profile such as GitHub it can:
 
 This is intended to catch failures such as "the first 16 KiB download correctly and the rest is cut off".
 
+The default minimum asset size is 32 KiB. That is deliberately only twice the 16 KiB failure boundary: large enough to prove the transfer continues beyond it, while still working on lightweight pages. If fewer than the requested number of sufficiently large assets are present, the asset test reports `WARN` rather than failing overall; any asset that is found is still verified fully.
+
 ## Requirements
 
 Ubuntu 24.04:
@@ -141,7 +143,7 @@ DISCOVER_HTML_HOSTS=1
 CHECK_ASSETS=1
 ASSET_URL_REGEX='^https://cdn\.example\.com/'
 ASSET_COUNT=3
-MIN_ASSET_SIZE=$((128 * 1024))
+MIN_ASSET_SIZE=$((32 * 1024))
 RANGE_SIZE=4096
 ```
 

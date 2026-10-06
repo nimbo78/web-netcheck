@@ -189,18 +189,10 @@ check_host() {
 }
 
 extract_https_urls() {
-    grep -Eo 'https://[A-Za-z0-9._~:/?#\[\]@!extract_https_urls() {
     grep -Eo 'https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+' "$1" 2>/dev/null \
-      | sed -E 's/["'"'<>),;]+$//' \
-      | sed 's/&amp;/\&/g' \
-      | sort -u
-}
-url_host() {
-    printf '%s\n' "$1" | sed -E 's#^https://([^/:]+).*#\1#'
-}()*+,;=%-]+' "$1" 2>/dev/null \
-      | sed -E "s/[\\\"'<>),;]+$//" \
-      | sed 's/&amp;/\&/g' \
-      | sort -u
+        | sed -E "s/[\\\"'<>),;]+$//" \
+        | sed 's/&amp;/\&/g' \
+        | sort -u
 }
 
 url_host() {
@@ -210,6 +202,7 @@ url_host() {
     url="${url%%:*}"
     printf '%s\n' "$url"
 }
+
 get_head_size() {
     local url="$1" headers="$TMPDIR_NETCHECK/head.$RANDOM.$$.txt" size rc
     curl "${CURL_IP[@]}" -sSIL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" "$url" >"$headers" 2>/dev/null

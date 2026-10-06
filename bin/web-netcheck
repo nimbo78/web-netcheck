@@ -353,6 +353,10 @@ if [[ "$CHECK_ASSETS" -ne 1 || ! -s "$HTML_FILE" ]]; then
 else
     mapfile -t ASSET_URLS < <(extract_https_urls "$HTML_FILE" | grep -E "$ASSET_URL_REGEX" | shuf)
     echo "Found ${#ASSET_URLS[@]} candidate asset URL(s)."
+    if [[ "$VERBOSE" -eq 1 && ${#ASSET_URLS[@]} -gt 0 ]]; then
+        echo "Candidate sample:"
+        printf '  %s\n' "${ASSET_URLS[@]:0:10}"
+    fi
     probes=0
     for url in "${ASSET_URLS[@]}"; do
         ((probes+=1)); (( probes > MAX_ASSET_PROBES )) && break

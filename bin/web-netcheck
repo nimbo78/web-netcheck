@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.3.0"
+VERSION="0.3.1"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -220,12 +220,16 @@ normalize_url() {
 extract_html_refs() {
     local file="$1"
 
-    # Real HTML resource/navigation attributes first.
-    grep -Eoi "(src|href)[[:space:]]*=[[:space:]]*(\"[^\"]+\"|\x27[^\x27]+\x27)" "$file" 2>/dev/null \
-        | sed -E "s/^[^=]+=[[:space:]]*//; s/^[\"\x27]//; s/[\"\x27]$//"
+    # Parse actual HTML src/href attributes. Use separate expressions for
+    # double- and single-quoted attributes to stay compatible with GNU grep -E.
+    grep -Eoi '(src|href)[[:space:]]*=[[:space:]]*"[^"]+"' "$file" 2>/dev/null \
+        | sed -E 's/^[^=]+=[[:space:]]*"//; s/"$//'
 
-    # Fallback for absolute URLs embedded in JSON/data attributes/scripts.
-    grep -Eo "https://[^\\\"\x27<>[:space:]]+" "$file" 2>/dev/null
+    grep -Eoi "(src|href)[[:space:]]*=[[:space:]]*'[^']+'" "$file" 2>/dev/null \
+        | sed -E "s/^[^=]+=[[:space:]]*'//; s/'$//"
+
+    # Fallback for absolute HTTPS URLs embedded in JSON/data attributes/scripts.
+    grep -Eo "https://[^\\\"'<>[:space:]]+" "$file" 2>/dev/null
 }
 
 extract_https_urls() {

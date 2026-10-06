@@ -75,9 +75,32 @@ The ad-hoc mode discovers absolute HTTPS URLs from the base HTML and tests the a
 
 For production monitoring, create a profile instead so critical API/download/registry hostnames that are not present on the front page are also covered.
 
+## Profile lookup order
+
+For `web-netcheck github`, profiles are searched in this order:
+
+1. `<directory containing web-netcheck>/github.conf`
+2. `../profiles/github.conf` relative to the script (useful when running from the repository)
+3. `/etc/web-netcheck/github.conf`
+
+The first readable file wins. This makes it possible to keep a portable `.conf` directly next to the script and have it override packaged/system configuration.
+
+The system profile directory can be changed with `WEB_NETCHECK_CONFIG_DIR`.
+
 ## Add a profile
 
-Copy `profiles/example.conf` to `/etc/web-netcheck/my-service.conf`:
+For a portable install, place the profile directly beside the script:
+
+```bash
+cp profiles/example.conf bin/my-service.conf
+bin/web-netcheck my-service
+```
+
+Or install it system-wide:
+
+```bash
+sudo mkdir -p /etc/web-netcheck
+sudo cp profiles/example.conf /etc/web-netcheck/my-service.conf
 
 ```bash
 sudo cp profiles/example.conf /etc/web-netcheck/my-service.conf

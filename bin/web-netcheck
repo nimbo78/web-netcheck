@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.2.4"
+VERSION="0.3.0"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -190,9 +190,51 @@ check_host() {
     printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' "$host" OK OK "$http" "${remote_ip:-$ip}" "${total}s" "$source"
 }
 
+normalize_url() {
+    local ref="$1"
+
+    # Decode the HTML entity that commonly appears in query strings.
+    ref=$(printf '%s\n' "$ref" | sed 's/&amp;/\&/g')
+
+    case "$ref" in
+        https://*)
+            printf '%s\n' "$ref"
+            ;;
+        //*)
+            printf 'https:%s\n' "$ref"
+            ;;
+        /*)
+            printf 'https://%s%s\n' "$BASE_HOST" "$ref"
+            ;;
+        http://*|mailto:*|javascript:*|data:*|\#*|"")
+            return 0
+            ;;
+        *)
+            # Relative reference. This is sufficient for the current
+            # root-page profiles and keeps discovery useful for generic sites.
+            printf 'https://%s/%s\n' "$BASE_HOST" "$ref"
+            ;;
+    esac
+}
+
+extract_html_refs() {
+    local file="$1"
+
+    # Real HTML resource/navigation attributes first.
+    grep -Eoi "(src|href)[[:space:]]*=[[:space:]]*(\"[^\"]+\"|\x27[^\x27]+\x27)" "$file" 2>/dev/null \
+        | sed -E "s/^[^=]+=[[:space:]]*//; s/^[\"\x27]//; s/[\"\x27]$//"
+
+    # Fallback for absolute URLs embedded in JSON/data attributes/scripts.
+    grep -Eo "https://[^\\\"\x27<>[:space:]]+" "$file" 2>/dev/null
+}
+
 extract_https_urls() {
-    grep -Eo "https://[^\\\"'<>[:space:]]+" "$1" 2>/dev/null \
-        | sed 's/&amp;/\&/g' \
+    local file="$1"
+
+    extract_html_refs "$file" \
+        | while IFS= read -r ref; do
+            normalize_url "$ref"
+        done \
         | sort -u
 }
 

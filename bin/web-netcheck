@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.3"
+VERSION="0.4.4"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -311,16 +311,20 @@ normalize_url() {
 extract_html_refs() {
     local file="$1"
 
-    # Parse actual HTML src/href attributes. Use separate expressions for
-    # double- and single-quoted attributes to stay compatible with GNU grep -E.
-    grep -Eoi '(src|href)[[:space:]]*=[[:space:]]*"[^"]+"' "$file" 2>/dev/null \
+    # Only collect URLs from resource-bearing HTML tags. In particular, do not
+    # treat ordinary <a href="..."> navigation/social links as page dependencies.
+    #
+    # Supported resource tags:
+    #   script, link, img, source, iframe, video, audio
+    #
+    # Extract each complete tag first, then pull src/href/poster from it.
+    grep -Eoi '<(script|link|img|source|iframe|video|audio)([[:space:]][^>]*)?>' "$file" 2>/dev/null \
+        | grep -Eoi '(src|href|poster)[[:space:]]*=[[:space:]]*"[^"]+"' \
         | sed -E 's/^[^=]+=[[:space:]]*"//; s/"$//'
 
-    grep -Eoi "(src|href)[[:space:]]*=[[:space:]]*'[^']+'" "$file" 2>/dev/null \
+    grep -Eoi '<(script|link|img|source|iframe|video|audio)([[:space:]][^>]*)?>' "$file" 2>/dev/null \
+        | grep -Eoi "(src|href|poster)[[:space:]]*=[[:space:]]*'[^']+'" \
         | sed -E "s/^[^=]+=[[:space:]]*'//; s/'$//"
-
-    # Fallback for absolute HTTPS URLs embedded in JSON/data attributes/scripts.
-    grep -Eo "https://[^\\\"'<>[:space:]]+" "$file" 2>/dev/null
 }
 
 extract_https_urls() {

@@ -168,6 +168,7 @@ BASE_TIMES_FILE="$TMPDIR_NETCHECK/base-times.txt"
 
 FAIL=0
 HOST_FAIL=0
+BASE_FAIL=0
 ASSET_FAIL=0
 ASSET_WARN=0
 META_WARN=0
@@ -265,12 +266,13 @@ probe_base_latency() {
                 p95=int(n*0.95 + 0.999999)
                 if (p50 < 1) p50=1
                 if (p95 < 1) p95=1
-                printf "Total time: min=%.3fs avg=%.3fs p50=%.3fs p95=%.3fs max=%.3fs\\n", a[1], sum/n, a[p50], a[p95], a[n]
+                printf "Total time: min=%.3fs avg=%.3fs p50=%.3fs p95=%.3fs max=%.3fs\n", a[1], sum/n, a[p50], a[p95], a[n]
             }
         ' "$sorted"
     fi
 
     if (( failed > 0 )); then
+        BASE_FAIL=1
         HOST_FAIL=1
         return 1
     fi
@@ -634,6 +636,7 @@ else
 fi
 
 hr
+[[ "$BASE_FAIL" -eq 0 ]] && echo 'RESULT base_latency=OK' || { echo 'RESULT base_latency=FAIL'; FAIL=1; }
 [[ "$HOST_FAIL" -eq 0 ]] && echo 'RESULT endpoint_reachability=OK' || { echo 'RESULT endpoint_reachability=FAIL'; FAIL=1; }
 [[ "$META_WARN" -eq 0 ]] && echo 'RESULT metadata_discovery=OK' || echo 'RESULT metadata_discovery=WARN'
 if [[ "$ASSET_FAIL" -ne 0 ]]; then

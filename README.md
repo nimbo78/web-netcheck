@@ -33,6 +33,7 @@ bash bin/web-netcheck github
 A healthy run ends with a machine-readable summary:
 
 ```text
+RESULT base_latency=OK
 RESULT endpoint_reachability=OK
 RESULT metadata_discovery=OK
 RESULT asset_integrity=OK
@@ -48,6 +49,37 @@ sudo install -m 0644 profiles/*.conf /etc/web-netcheck/
 ```
 
 > `jq` is only required by profiles that use JSON metadata discovery, such as GitHub.
+
+## Base URL latency
+
+By default, `web-netcheck` requests the profile's `BASE_URL` **10 times with a 1 second pause** between attempts. Each request uses a fresh `curl` process and reports cumulative timing checkpoints:
+
+```text
+TRY  HTTP  REMOTE_IP       DNS       CONNECT   TLS_READY TTFB      TOTAL
+1    200   77.88.44.242    0.004s    0.011s    0.034s    1.521s    1.585s
+2    200   77.88.44.242    0.003s    0.010s    0.032s    1.691s    1.750s
+...
+```
+
+The timing columns map to curl's `time_namelookup`, `time_connect`, `time_appconnect`, `time_starttransfer` and `time_total`. They are cumulative timestamps from the start of each request, not independent phase durations.
+
+At the end the tool summarizes total request time:
+
+```text
+Base URL attempts: success=10 failure=0 delay=1s
+Total time: min=1.421s avg=1.603s p50=1.585s p95=1.750s max=1.750s
+```
+
+Override the defaults when needed:
+
+```bash
+web-netcheck ya --base-attempts 20 --base-delay 0.5
+
+# Disable repeated base probes
+web-netcheck ya --base-attempts 0
+```
+
+Any transport-level failure during the repeated base probe sets `RESULT base_latency=FAIL` and contributes to the overall failure.
 
 ## What this catches
 
@@ -129,6 +161,9 @@ web-netcheck github --assets 5
 web-netcheck github --min-size 131072
 web-netcheck github -6
 web-netcheck github --verbose
+
+# Repeat the main URL 10 times with a 1s pause (default)
+web-netcheck github --base-attempts 10 --base-delay 1
 ```
 
 The GitHub profile combines a static list of critical service hosts, dependencies discovered from the current GitHub HTML, and domains exposed by `https://api.github.com/meta`.
@@ -234,6 +269,7 @@ export WEB_NETCHECK_CONFIG_DIR=/path/to/profiles
 The summary lines are intentionally stable enough for shell scripts and monitoring wrappers:
 
 ```text
+RESULT base_latency=OK
 RESULT endpoint_reachability=OK
 RESULT metadata_discovery=OK
 RESULT asset_integrity=WARN

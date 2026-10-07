@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.4"
+VERSION="0.5.0"
 PROGRAM="${0##*/}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROFILE_DIR="$SCRIPT_DIR"
@@ -16,6 +16,8 @@ CONNECT_TIMEOUT_DEFAULT=5
 REQUEST_TIMEOUT_DEFAULT=20
 DOWNLOAD_TIMEOUT_DEFAULT=60
 MAX_ASSET_PROBES_DEFAULT=50
+BASE_ATTEMPTS_DEFAULT=10
+BASE_DELAY_DEFAULT=1
 
 IP_VERSION=4
 VERBOSE=0
@@ -33,6 +35,8 @@ Options:
   -n, --assets N          Number of random assets to verify
       --min-size BYTES    Minimum asset size
       --range-size BYTES  Tail range size
+      --base-attempts N    Repeat BASE_URL request N times (default: 10; 0 disables)
+      --base-delay SEC     Delay between BASE_URL requests (default: 1)
       --url URL           Base URL for ad-hoc mode
       --auto              Discover hosts/assets from --url
   -6, --ipv6              Use IPv6 instead of IPv4
@@ -50,6 +54,8 @@ USAGE
 CLI_ASSET_COUNT=""
 CLI_MIN_ASSET_SIZE=""
 CLI_RANGE_SIZE=""
+CLI_BASE_ATTEMPTS=""
+CLI_BASE_DELAY=""
 
 while (($#)); do
     case "$1" in
@@ -62,6 +68,12 @@ while (($#)); do
         --range-size)
             [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid --range-size" >&2; exit 2; }
             CLI_RANGE_SIZE="$2"; shift 2 ;;
+        --base-attempts)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Invalid --base-attempts" >&2; exit 2; }
+            CLI_BASE_ATTEMPTS="$2"; shift 2 ;;
+        --base-delay)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Invalid --base-delay" >&2; exit 2; }
+            CLI_BASE_DELAY="$2"; shift 2 ;;
         --url)
             [[ $# -ge 2 ]] || { echo "Missing --url value" >&2; exit 2; }
             BASE_URL_OVERRIDE="$2"; shift 2 ;;
@@ -76,7 +88,7 @@ while (($#)); do
     esac
 done
 
-required_cmds=(curl dig shuf sha256sum stat awk sed grep sort head tail cmp mktemp)
+required_cmds=(curl dig shuf sha256sum stat awk sed grep sort head tail cmp mktemp sleep)
 for cmd in "${required_cmds[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || {
         echo "ERROR: missing dependency: $cmd" >&2
@@ -99,6 +111,8 @@ CONNECT_TIMEOUT="$CONNECT_TIMEOUT_DEFAULT"
 REQUEST_TIMEOUT="$REQUEST_TIMEOUT_DEFAULT"
 DOWNLOAD_TIMEOUT="$DOWNLOAD_TIMEOUT_DEFAULT"
 MAX_ASSET_PROBES="$MAX_ASSET_PROBES_DEFAULT"
+BASE_ATTEMPTS="$BASE_ATTEMPTS_DEFAULT"
+BASE_DELAY="$BASE_DELAY_DEFAULT"
 META_URL=""
 META_JQ_FILTER=""
 
@@ -141,6 +155,8 @@ fi
 [[ -n "$CLI_ASSET_COUNT" ]] && ASSET_COUNT="$CLI_ASSET_COUNT"
 [[ -n "$CLI_MIN_ASSET_SIZE" ]] && MIN_ASSET_SIZE="$CLI_MIN_ASSET_SIZE"
 [[ -n "$CLI_RANGE_SIZE" ]] && RANGE_SIZE="$CLI_RANGE_SIZE"
+[[ -n "$CLI_BASE_ATTEMPTS" ]] && BASE_ATTEMPTS="$CLI_BASE_ATTEMPTS"
+[[ -n "$CLI_BASE_DELAY" ]] && BASE_DELAY="$CLI_BASE_DELAY"
 
 if [[ "$IP_VERSION" -eq 6 ]]; then CURL_IP=(-6); DIG_TYPE=AAAA; else CURL_IP=(-4); DIG_TYPE=A; fi
 
@@ -148,6 +164,7 @@ TMPDIR_NETCHECK=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_NETCHECK"' EXIT
 HTML_FILE="$TMPDIR_NETCHECK/base.html"
 META_FILE="$TMPDIR_NETCHECK/meta.json"
+BASE_TIMES_FILE="$TMPDIR_NETCHECK/base-times.txt"
 
 FAIL=0
 HOST_FAIL=0
@@ -189,6 +206,75 @@ check_host() {
     fi
     IFS='|' read -r remote_ip http tls total <<< "$result"
     printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' "$host" OK OK "$http" "${remote_ip:-$ip}" "${total}s" "$source"
+}
+
+probe_base_latency() {
+    local i result rc remote_ip http dns connect tls_ready ttfb total err
+    local ok=0 failed=0 sorted="$TMPDIR_NETCHECK/base-times.sorted"
+
+    : >"$BASE_TIMES_FILE"
+
+    if (( BASE_ATTEMPTS <= 0 )); then
+        echo "SKIP: base URL latency probe disabled"
+        return 0
+    fi
+
+    printf '%-4s %-5s %-15s %-9s %-9s %-9s %-9s %-9s\n' TRY HTTP REMOTE_IP DNS CONNECT TLS_READY TTFB TOTAL
+
+    for ((i=1; i<=BASE_ATTEMPTS; i++)); do
+        err="$TMPDIR_NETCHECK/base-latency.$i.err"
+        result=$(curl "${CURL_IP[@]}" -sS -L \
+            -o /dev/null \
+            --connect-timeout "$CONNECT_TIMEOUT" \
+            --max-time "$REQUEST_TIMEOUT" \
+            -w '%{remote_ip}|%{http_code}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}' \
+            "$BASE_URL" 2>"$err")
+        rc=$?
+
+        if [[ "$rc" -ne 0 ]]; then
+            printf '%-4s %-5s %-15s %-9s %-9s %-9s %-9s %-9s\n' "$i" FAIL - - - - - -
+            [[ "$VERBOSE" -eq 1 && -s "$err" ]] && sed 's/^/     /' "$err"
+            ((failed+=1))
+        else
+            IFS='|' read -r remote_ip http dns connect tls_ready ttfb total <<< "$result"
+            printf '%-4s %-5s %-15s %-9s %-9s %-9s %-9s %-9s\n' \
+                "$i" "$http" "$remote_ip" "${dns}s" "${connect}s" "${tls_ready}s" "${ttfb}s" "${total}s"
+            printf '%s\n' "$total" >>"$BASE_TIMES_FILE"
+            ((ok+=1))
+        fi
+
+        if (( i < BASE_ATTEMPTS )) && [[ "$BASE_DELAY" != "0" && "$BASE_DELAY" != "0.0" ]]; then
+            sleep "$BASE_DELAY"
+        fi
+    done
+
+    echo
+    printf 'Base URL attempts: success=%d failure=%d delay=%ss\n' "$ok" "$failed" "$BASE_DELAY"
+
+    if [[ -s "$BASE_TIMES_FILE" ]]; then
+        sort -n "$BASE_TIMES_FILE" >"$sorted"
+        awk '
+            {
+                a[NR]=$1
+                sum+=$1
+            }
+            END {
+                n=NR
+                if (n == 0) exit
+                p50=int(n*0.50 + 0.999999)
+                p95=int(n*0.95 + 0.999999)
+                if (p50 < 1) p50=1
+                if (p95 < 1) p95=1
+                printf "Total time: min=%.3fs avg=%.3fs p50=%.3fs p95=%.3fs max=%.3fs\\n", a[1], sum/n, a[p50], a[p95], a[n]
+            }
+        ' "$sorted"
+    fi
+
+    if (( failed > 0 )); then
+        HOST_FAIL=1
+        return 1
+    fi
+    return 0
 }
 
 check_url() {
@@ -442,11 +528,11 @@ BASE_HOST="${BASE_HOST%%/*}"
 BASE_HOST="${BASE_HOST%%:*}"
 if ((${#STATIC_HOSTS[@]} == 0)); then STATIC_HOSTS=("$BASE_HOST"); fi
 
-printf 'web-netcheck %s\nTime:          %s\nProfile:       %s\nProfile file:  %s\nBase URL:      %s\nIP family:     IPv%s\nAssets:        %s\nMinimum size:  %s (%s)\n' \
-    "$VERSION" "$(date -Is)" "${PROFILE:-ad-hoc}" "${PROFILE_FILE:-n/a}" "$BASE_URL" "$IP_VERSION" "$ASSET_COUNT" "$MIN_ASSET_SIZE" "$(human_bytes "$MIN_ASSET_SIZE")"
+printf 'web-netcheck %s\nTime:          %s\nProfile:       %s\nProfile file:  %s\nBase URL:      %s\nIP family:     IPv%s\nBase probes:   %s (delay %ss)\nAssets:        %s\nMinimum size:  %s (%s)\n' \
+    "$VERSION" "$(date -Is)" "${PROFILE:-ad-hoc}" "${PROFILE_FILE:-n/a}" "$BASE_URL" "$IP_VERSION" "$BASE_ATTEMPTS" "$BASE_DELAY" "$ASSET_COUNT" "$MIN_ASSET_SIZE" "$(human_bytes "$MIN_ASSET_SIZE")"
 hr
 
-echo "[1/3] Base page and hostname discovery"
+echo "[1/4] Base page and hostname discovery"
 DYNAMIC_HOSTS=()
 
 if [[ "$DISCOVER_HTML_HOSTS" -eq 1 || "$CHECK_ASSETS" -eq 1 ]]; then
@@ -484,7 +570,11 @@ mapfile -t ALL_HOSTS < <(printf '%s\n' "${STATIC_HOSTS[@]}" "${DYNAMIC_HOSTS[@]}
 echo "Discovered ${#DYNAMIC_HOSTS[@]} hostname(s) from HTML; ${#META_HOSTS[@]} from metadata; ${#ALL_HOSTS[@]} total."
 
 hr
-echo "[2/3] DNS + HTTPS reachability"
+echo "[2/4] Base URL latency"
+probe_base_latency || true
+
+hr
+echo "[3/4] DNS + HTTPS reachability"
 printf '%-48s %-6s %-7s %-7s %-15s %-9s %s\n' HOST DNS HTTPS HTTP REMOTE_IP TOTAL SOURCE
 hr
 for host in "${ALL_HOSTS[@]}"; do
@@ -508,7 +598,7 @@ if declare -F run_custom_probes >/dev/null 2>&1; then
 fi
 
 hr
-echo "[3/3] Asset integrity"
+echo "[4/4] Asset integrity"
 if [[ "$CHECK_ASSETS" -ne 1 || ! -s "$HTML_FILE" ]]; then
     echo "SKIP: asset checks disabled or base HTML unavailable"
 else
